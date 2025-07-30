@@ -54,6 +54,22 @@ def parse_expression(expr: str) -> str:
     except:
         return expr
 
+# --- Функция форматирования значений для SQL в зависимости от типа данных
+
+def format_sql_value(value, value_type):
+    """Форматирует значение для SQL в зависимости от типа данных"""
+    if value_type == "число":
+        return str(value)
+    elif value_type == "булево":
+        if str(value).lower() in ['true', '1', 'да', 'yes']:
+            return 'true'
+        elif str(value).lower() in ['false', '0', 'нет', 'no']:
+            return 'false'
+        else:
+            return str(value)  # Если не удается определить, оставляем как есть
+    else:  # строка (по умолчанию)
+        return f"'{value}'"
+
 # --- Функция генерации SQL для всех метрик из эксперимента
 
 def generate_sql_queries_for_metrics(experiment: dict, source_table: str) -> list:
@@ -81,20 +97,24 @@ def generate_sql_queries_for_metrics(experiment: dict, source_table: str) -> lis
         
         # Добавляем глобальные WHERE фильтры
         for f in global_where_filters:
+            value_type = f.get("value_type", "строка")
             if f["operator"] == "IN":
-                val = ", ".join(f"'{v}'" for v in f["value"])
+                val = ", ".join(format_sql_value(v, value_type) for v in f["value"])
                 where_clauses.append(f"{f['field']} IN ({val})")
             else:
-                where_clauses.append(f"{f['field']} {f['operator']} '{f['value']}'")
+                formatted_value = format_sql_value(f['value'], value_type)
+                where_clauses.append(f"{f['field']} {f['operator']} {formatted_value}")
         
         # Добавляем индивидуальные WHERE фильтры метрики
         metric_where_filters = m.get("where_filters", [])
         for f in metric_where_filters:
+            value_type = f.get("value_type", "строка")
             if f["operator"] == "IN":
-                val = ", ".join(f"'{v}'" for v in f["value"])
+                val = ", ".join(format_sql_value(v, value_type) for v in f["value"])
                 where_clauses.append(f"{f['field']} IN ({val})")
             else:
-                where_clauses.append(f"{f['field']} {f['operator']} '{f['value']}'")
+                formatted_value = format_sql_value(f['value'], value_type)
+                where_clauses.append(f"{f['field']} {f['operator']} {formatted_value}")
 
         group_by = "magnit_id, group_label"
         
@@ -227,7 +247,7 @@ metric_where_filters = []
 if "temp_metric_where_filters" not in st.session_state:
     st.session_state.temp_metric_where_filters = []
 
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3, col4, col5 = st.columns(5)
 with col1:
     mwf_field = st.text_input("Поле", key="mwf_field")
 with col2:
@@ -235,13 +255,16 @@ with col2:
 with col3:
     mwf_value = st.text_input("Значение", key="mwf_value")
 with col4:
+    mwf_value_type = st.selectbox("Тип данных", ["строка", "число", "булево"], key="mwf_value_type")
+with col5:
     if st.button("➕ Добавить фильтр", key="add_metric_filter"):
         if mwf_field and mwf_op and mwf_value:
             val = [v.strip() for v in mwf_value.split(",")] if mwf_op == "IN" else mwf_value.strip()
             st.session_state.temp_metric_where_filters.append({
                 "field": mwf_field,
                 "operator": mwf_op,
-                "value": val
+                "value": val,
+                "value_type": mwf_value_type
             })
             st.rerun()
 
@@ -250,7 +273,8 @@ if st.session_state.temp_metric_where_filters:
     for i, f in enumerate(st.session_state.temp_metric_where_filters):
         col1, col2 = st.columns([5, 1])
         with col1:
-            st.markdown(f"- `{f['field']} {f['operator']} {f['value']}`")
+            value_type_info = f" ({f.get('value_type', 'строка')})" if 'value_type' in f else ""
+            st.markdown(f"- `{f['field']} {f['operator']} {f['value']}`{value_type_info}")
         with col2:
             if st.button("❌", key=f"delete_temp_mwf_{i}"):
                 st.session_state.temp_metric_where_filters.pop(i)
@@ -293,7 +317,7 @@ st.write("#### 🔍 Индивидуальные WHERE фильтры для rat
 if "temp_ratio_where_filters" not in st.session_state:
     st.session_state.temp_ratio_where_filters = []
 
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3, col4, col5 = st.columns(5)
 with col1:
     rwf_field = st.text_input("Поле", key="rwf_field")
 with col2:
@@ -301,13 +325,16 @@ with col2:
 with col3:
     rwf_value = st.text_input("Значение", key="rwf_value")
 with col4:
+    rwf_value_type = st.selectbox("Тип данных", ["строка", "число", "булево"], key="rwf_value_type")
+with col5:
     if st.button("➕ Добавить фильтр", key="add_ratio_filter"):
         if rwf_field and rwf_op and rwf_value:
             val = [v.strip() for v in rwf_value.split(",")] if rwf_op == "IN" else rwf_value.strip()
             st.session_state.temp_ratio_where_filters.append({
                 "field": rwf_field,
                 "operator": rwf_op,
-                "value": val
+                "value": val,
+                "value_type": rwf_value_type
             })
             st.rerun()
 
@@ -316,7 +343,8 @@ if st.session_state.temp_ratio_where_filters:
     for i, f in enumerate(st.session_state.temp_ratio_where_filters):
         col1, col2 = st.columns([5, 1])
         with col1:
-            st.markdown(f"- `{f['field']} {f['operator']} {f['value']}`")
+            value_type_info = f" ({f.get('value_type', 'строка')})" if 'value_type' in f else ""
+            st.markdown(f"- `{f['field']} {f['operator']} {f['value']}`{value_type_info}")
         with col2:
             if st.button("❌", key=f"delete_temp_rwf_{i}"):
                 st.session_state.temp_ratio_where_filters.pop(i)
@@ -358,9 +386,15 @@ if st.session_state.metrics:
 
 # --- WHERE фильтры
 st.write("## WHERE фильтры (глобальные для всех метрик)")
-where_field = st.text_input("Поле", key='where_field')
-where_op = st.selectbox("Оператор", ["=", "!=", "IN",">=","<=",">","<"], key='where_op')
-where_value = st.text_input("Значение (добавь кавычки для строк, без кавычек для чисел)", key='where_value')
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    where_field = st.text_input("Поле", key='where_field')
+with col2:
+    where_op = st.selectbox("Оператор", ["=", "!=", "IN",">=","<=",">","<"], key='where_op')
+with col3:
+    where_value = st.text_input("Значение", key='where_value')
+with col4:
+    where_value_type = st.selectbox("Тип данных", ["строка", "число", "булево"], key='where_value_type')
 
 if st.button("➕ Добавить WHERE"):
     if where_field and where_op and where_value:
@@ -368,7 +402,8 @@ if st.button("➕ Добавить WHERE"):
         st.session_state.where_filters.append({
             "field": where_field,
             "operator": where_op,
-            "value": val
+            "value": val,
+            "value_type": where_value_type
         })
         st.success("✅ WHERE фильтр добавлен")
         st.rerun()
@@ -378,7 +413,8 @@ if st.session_state.where_filters:
     for i, f in enumerate(st.session_state.where_filters):
         col1, col2 = st.columns([5, 1])
         with col1:
-            st.markdown(f"- `{f['field']} {f['operator']} {f['value']}`")
+            value_type_info = f" ({f.get('value_type', 'строка')})" if 'value_type' in f else ""
+            st.markdown(f"- `{f['field']} {f['operator']} {f['value']}`{value_type_info}")
         with col2:
             if st.button("❌", key=f"delete_where_{i}"):
                 st.session_state.where_filters.pop(i)
