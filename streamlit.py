@@ -54,6 +54,40 @@ def parse_expression(expr: str) -> str:
     except:
         return expr
 
+# --- Функция для определения типа значения и форматирования
+def format_filter_value(value, operator):
+    """Определяет тип значения и возвращает правильно отформатированное значение для SQL"""
+    if operator == "IN":
+        # Для IN оператора обрабатываем список значений
+        formatted_values = []
+        for v in value:
+            v = str(v).strip()
+            # Проверяем, является ли значение числом
+            try:
+                # Пробуем конвертировать в float, затем проверяем, является ли целым
+                float_val = float(v)
+                if float_val.is_integer():
+                    formatted_values.append(str(int(float_val)))
+                else:
+                    formatted_values.append(str(float_val))
+            except ValueError:
+                # Если не число, то строка - добавляем кавычки
+                formatted_values.append(f"'{v}'")
+        return ", ".join(formatted_values)
+    else:
+        # Для остальных операторов
+        value = str(value).strip()
+        # Проверяем, является ли значение числом
+        try:
+            float_val = float(value)
+            if float_val.is_integer():
+                return str(int(float_val))
+            else:
+                return str(float_val)
+        except ValueError:
+            # Если не число, то строка - добавляем кавычки
+            return f"'{value}'"
+
 # --- Функция генерации SQL для всех метрик из эксперимента
 
 def generate_sql_queries_for_metrics(experiment: dict, source_table: str) -> list:
@@ -81,20 +115,20 @@ def generate_sql_queries_for_metrics(experiment: dict, source_table: str) -> lis
         
         # Добавляем глобальные WHERE фильтры
         for f in global_where_filters:
+            formatted_value = format_filter_value(f["value"], f["operator"])
             if f["operator"] == "IN":
-                val = ", ".join(f"'{v}'" for v in f["value"])
-                where_clauses.append(f"{f['field']} IN ({val})")
+                where_clauses.append(f"{f['field']} IN ({formatted_value})")
             else:
-                where_clauses.append(f"{f['field']} {f['operator']} '{f['value']}'")
+                where_clauses.append(f"{f['field']} {f['operator']} {formatted_value}")
         
         # Добавляем индивидуальные WHERE фильтры метрики
         metric_where_filters = m.get("where_filters", [])
         for f in metric_where_filters:
+            formatted_value = format_filter_value(f["value"], f["operator"])
             if f["operator"] == "IN":
-                val = ", ".join(f"'{v}'" for v in f["value"])
-                where_clauses.append(f"{f['field']} IN ({val})")
+                where_clauses.append(f"{f['field']} IN ({formatted_value})")
             else:
-                where_clauses.append(f"{f['field']} {f['operator']} '{f['value']}'")
+                where_clauses.append(f"{f['field']} {f['operator']} {formatted_value}")
 
         group_by = "magnit_id, group_label"
         
@@ -233,7 +267,7 @@ with col1:
 with col2:
     mwf_op = st.selectbox("Оператор", ["=", "!=", "IN", ">=", "<=", ">", "<"], key="mwf_op")
 with col3:
-    mwf_value = st.text_input("Значение", key="mwf_value")
+    mwf_value = st.text_input("Значение (автоопределение типа)", key="mwf_value")
 with col4:
     if st.button("➕ Добавить фильтр", key="add_metric_filter"):
         if mwf_field and mwf_op and mwf_value:
@@ -299,7 +333,7 @@ with col1:
 with col2:
     rwf_op = st.selectbox("Оператор", ["=", "!=", "IN", ">=", "<=", ">", "<"], key="rwf_op")
 with col3:
-    rwf_value = st.text_input("Значение", key="rwf_value")
+    rwf_value = st.text_input("Значение (автоопределение типа)", key="rwf_value")
 with col4:
     if st.button("➕ Добавить фильтр", key="add_ratio_filter"):
         if rwf_field and rwf_op and rwf_value:
@@ -360,7 +394,7 @@ if st.session_state.metrics:
 st.write("## WHERE фильтры (глобальные для всех метрик)")
 where_field = st.text_input("Поле", key='where_field')
 where_op = st.selectbox("Оператор", ["=", "!=", "IN",">=","<=",">","<"], key='where_op')
-where_value = st.text_input("Значение (добавь кавычки для строк, без кавычек для чисел)", key='where_value')
+where_value = st.text_input("Значение (система автоматически определит тип данных)", key='where_value')
 
 if st.button("➕ Добавить WHERE"):
     if where_field and where_op and where_value:
