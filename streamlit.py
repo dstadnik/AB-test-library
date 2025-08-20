@@ -2,6 +2,7 @@ import streamlit as st
 import yaml
 from datetime import date
 import os
+import re
 
 CONFIG_FILE = "experiments_config.yaml"
 METRICS_PRESETS_FILE = "metrics_presets.yaml"
@@ -21,7 +22,10 @@ AVAILABLE_METRICS = [
 ]
 
 AGGREGATION_FUNCTIONS = [
-    "sum", "avg", "max", "min", "maxIf", "count", "countIf","sumIf"
+    "sum", "avg", "max", "min",
+    "sumIf", "maxIf", "minIf", "avgIf",
+    "count", "countIf",
+    "uniqIf", "anyIf"
 ]
 
 # --- Загрузка предустановленных метрик ---
@@ -105,16 +109,52 @@ def generate_sql_queries_for_metrics(experiment: dict, source_table: str) -> lis
                 formatted_value = format_sql_value(f['value'], value_type)
                 where_clauses.append(f"{f['field']} {f['operator']} {formatted_value}")
 
-        # Добавляем индивидуальные WHERE фильтры метрики
+        # Подготовим выражение дополнительных условий метрики (для встраивания в *If)
         metric_where_filters = m.get("where_filters", [])
+        metric_where_conditions = []
         for f in metric_where_filters:
             value_type = f.get("value_type", "строка")
             if f["operator"] == "IN":
                 val = ", ".join(format_sql_value(v, value_type) for v in f["value"])
-                where_clauses.append(f"{f['field']} IN ({val})")
+                metric_where_conditions.append(f"{f['field']} IN ({val})")
             else:
                 formatted_value = format_sql_value(f['value'], value_type)
-                where_clauses.append(f"{f['field']} {f['operator']} {formatted_value}")
+                metric_where_conditions.append(f"{f['field']} {f['operator']} {formatted_value}")
+        metric_extra_condition = " AND ".join(metric_where_conditions)
+
+        def merge_if_condition(expr: str, extra_cond: str) -> str:
+            if not extra_cond:
+                return expr
+            e = expr.strip()
+            # countIf(condition)
+            if e.lower().startswith("countif("):
+                inner = e[e.find("(") + 1: e.rfind(")")].strip()
+                if inner:
+                    new_inner = f"({inner}) AND ({extra_cond})"
+                else:
+                    new_inner = f"({extra_cond})"
+                return f"countIf({new_inner})"
+            # <agg>If(arg, condition)
+            m_ = re.match(r"^(\w+If)\s*\((.*)\)$", e)
+            if m_:
+                agg_name = m_.group(1)
+                inside = m_.group(2)
+                # Разделяем по первой запятой на аргумент и условие
+                parts = inside.split(",", 1)
+                if len(parts) == 2:
+                    arg = parts[0].strip()
+                    cond = parts[1].strip()
+                    cond = cond[1:-1].strip() if cond.startswith("(") and cond.endswith(")") else cond
+                    if cond:
+                        merged_cond = f"({cond}) AND ({extra_cond})"
+                    else:
+                        merged_cond = f"({extra_cond})"
+                    return f"{agg_name}({arg}, {merged_cond})"
+                else:
+                    # Если условие отсутствует, трактуем всё как аргумент и добавляем условие
+                    arg = inside.strip()
+                    return f"{agg_name}({arg}, ({extra_cond}))"
+            return expr
 
         group_by = "magnit_id, group_label"
 
@@ -127,13 +167,40 @@ def generate_sql_queries_for_metrics(experiment: dict, source_table: str) -> lis
         ]
 
         if metric_type == "basic":
-            metric_expr = f"{m['expression']} AS numerator"
+            expr_original = m['expression']
+            # Если это *If агрегация — встраиваем фильтры в выражение, иначе добавляем их в WHERE
+            expr_lower = expr_original.lower()
+            if "if(" in expr_lower:
+                expr_final = merge_if_condition(expr_original, metric_extra_condition)
+            else:
+                expr_final = expr_original
+                if metric_extra_condition:
+                    where_clauses.append(metric_extra_condition)
+            metric_expr = f"{expr_final} AS numerator"
             denominator_expr = "1 AS denominator"
         elif metric_type == "ratio":
-            numerator_expr = m["numerator"]
-            denominator_expr = m["denominator"]
+            numerator_original = m["numerator"]
+            denominator_original = m["denominator"]
+
+            num_has_if = "if(" in numerator_original.lower()
+            den_has_if = "if(" in denominator_original.lower()
+
+            if num_has_if:
+                numerator_expr = merge_if_condition(numerator_original, metric_extra_condition)
+            else:
+                numerator_expr = numerator_original
+
+            if den_has_if:
+                denominator_expr_unaliased = merge_if_condition(denominator_original, metric_extra_condition)
+            else:
+                denominator_expr_unaliased = denominator_original
+
+            # Если ни одно из выражений не *If — добавляем фильтры в WHERE
+            if not num_has_if and not den_has_if and metric_extra_condition:
+                where_clauses.append(metric_extra_condition)
+
             metric_expr = f"{numerator_expr} AS numerator"
-            denominator_expr = f"{denominator_expr} AS denominator"
+            denominator_expr = f"{denominator_expr_unaliased} AS denominator"
         else:
             continue
 
@@ -281,7 +348,14 @@ if st.session_state.temp_metric_where_filters:
                 st.rerun()
 
 if st.button("➕ Добавить базовую метрику"):
-    expression = f"{agg}({agg_then}, {agg_condition})" if agg in ("maxIf", "countIf","uniqIf","anyIf") and agg_condition else f"{agg}({metric})"
+    if 'if' in agg.lower() and agg_condition:
+        if agg == "countIf":
+            expression = f"{agg}({agg_condition})"
+        else:
+            expr_arg = agg_then.strip() if agg_then else metric
+            expression = f"{agg}({expr_arg}, {agg_condition})"
+    else:
+        expression = f"{agg}({metric})"
     label_final = label if label else expression
     new_metric = {
         "name": label_final,
@@ -308,7 +382,7 @@ with col1:
 with col2:
     denom_metric = st.selectbox("Знаменатель метрика", AVAILABLE_METRICS, key="denom_metric")
     denom_agg = st.selectbox("Знаменатель агрегация", AGGREGATION_FUNCTIONS, key="denom_agg")
-    if 'if' in num_agg.lower():
+    if 'if' in denom_agg.lower():
         denom_cond = st.text_input("Знаменатель условие (если maxIf/countIf)", key="denom_cond")
         denom_then = st.text_input("Знаменатель значение если условие верно", key="denom_then")
 
@@ -354,8 +428,23 @@ if st.session_state.temp_ratio_where_filters:
                 st.rerun()
 
 if st.button("➕ Добавить ratio"):
-    num_expr = f"{num_agg}({num_then}, {num_cond})" if num_agg in ["maxIf", "countIf"] and num_cond else f"{num_agg}({num_metric})"
-    denom_expr = f"{denom_agg}({denom_then}, {denom_cond})" if denom_agg in ["maxIf", "countIf"] and denom_cond else f"{denom_agg}({denom_metric})"
+    if 'if' in num_agg.lower() and num_cond:
+        if num_agg == "countIf":
+            num_expr = f"{num_agg}({num_cond})"
+        else:
+            num_arg = num_then.strip() if num_then else num_metric
+            num_expr = f"{num_agg}({num_arg}, {num_cond})"
+    else:
+        num_expr = f"{num_agg}({num_metric})"
+
+    if 'if' in denom_agg.lower() and denom_cond:
+        if denom_agg == "countIf":
+            denom_expr = f"{denom_agg}({denom_cond})"
+        else:
+            denom_arg = denom_then.strip() if denom_then else denom_metric
+            denom_expr = f"{denom_agg}({denom_arg}, {denom_cond})"
+    else:
+        denom_expr = f"{denom_agg}({denom_metric})"
     label_final = ratio_label if ratio_label else f"{num_expr} / {denom_expr}"
     new_ratio_metric = {
         "name": label_final,
