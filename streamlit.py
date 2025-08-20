@@ -44,6 +44,17 @@ def s3_read_yaml_text(filename: str):
     except Exception:
         return None
 
+def s3_write_yaml_text(filename: str, text: str) -> bool:
+    s3 = get_object_storage_session()
+    if not s3:
+        return False
+    key = f"{PREFIX}/{filename}" if PREFIX else filename
+    try:
+        s3.put_object(Bucket=BUCKET_NAME, Key=key, Body=text.encode('utf-8'))
+        return True
+    except Exception:
+        return False
+
 AVAILABLE_METRICS = [
     "discounts_sum", "discount_sum_w_nds", "launch_flg", "catalog_main_flg", "catalog_listing_flg",
     "search_main_flg", "search_result_flg", "product_screen_flg", "product_screen_to_cart_flg",
@@ -91,8 +102,12 @@ metrics_presets = load_presets()
 def save_new_preset(new_preset):
     presets = load_presets()
     presets.append(new_preset)
-    with open(METRICS_PRESETS_FILE, "w") as f:
-        yaml.dump({"metrics_presets": presets}, f, sort_keys=False, allow_unicode=True)
+    yaml_text = yaml.dump({"metrics_presets": presets}, sort_keys=False, allow_unicode=True)
+    # Try S3 first; if failed, fallback to local file write
+    wrote = s3_write_yaml_text(METRICS_PRESETS_FILE, yaml_text)
+    if not wrote:
+        with open(METRICS_PRESETS_FILE, "w") as f:
+            f.write(yaml_text)
 
 
 
@@ -629,8 +644,12 @@ if st.button("💾 Сохранить эксперимент"):
         config_data["experiments"] = [e for e in config_data["experiments"] if e["experiment_name"] != exp_name]
         config_data["experiments"].append(new_exp)
 
-        with open(CONFIG_FILE, "w") as f:
-            yaml.dump(config_data, f, sort_keys=False, allow_unicode=True)
+        yaml_text_cfg = yaml.dump(config_data, sort_keys=False, allow_unicode=True)
+        # Try S3 first; fallback to local
+        saved_to_s3 = s3_write_yaml_text(CONFIG_FILE, yaml_text_cfg)
+        if not saved_to_s3:
+            with open(CONFIG_FILE, "w") as f:
+                f.write(yaml_text_cfg)
 
         st.success(f"✅ Эксперимент '{exp_name}' добавлен!")
         st.session_state.where_filters = []
@@ -646,8 +665,10 @@ if existing_names:
     exp_to_delete = st.selectbox("Выбери эксперимент для удаления", existing_names)
     if st.button(f"❌ Удалить эксперимент '{exp_to_delete}'"):
         config_data["experiments"] = [e for e in config_data["experiments"] if e["experiment_name"] != exp_to_delete]
-        with open(CONFIG_FILE, "w") as f:
-            yaml.dump(config_data, f, sort_keys=False, allow_unicode=True)
+        yaml_text_cfg = yaml.dump(config_data, sort_keys=False, allow_unicode=True)
+        if not s3_write_yaml_text(CONFIG_FILE, yaml_text_cfg):
+            with open(CONFIG_FILE, "w") as f:
+                f.write(yaml_text_cfg)
         st.success(f"Эксперимент '{exp_to_delete}' удалён из конфига")
         st.rerun()
 
