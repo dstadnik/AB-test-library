@@ -7,6 +7,43 @@ import re
 CONFIG_FILE = "experiments_config.yaml"
 METRICS_PRESETS_FILE = "metrics_presets.yaml"
 
+# --- S3 (Yandex Object Storage) configuration ---
+BUCKET_NAME = os.getenv("S3_BUCKET", "wl2-data")
+PREFIX = os.getenv("S3_PREFIX", "AB_Library_Config")
+
+def get_object_storage_session():
+    try:
+        import boto3
+    except Exception:
+        return None
+
+    key_id = os.getenv('S3_KEY_ID')
+    access_key = os.getenv('S3_ACCESS_KEY')
+    if not key_id or not access_key:
+        return None
+
+    session = boto3.session.Session(
+        aws_access_key_id=key_id,
+        aws_secret_access_key=access_key
+    )
+    s3 = session.client(
+        service_name='s3',
+        endpoint_url='https://storage.yandexcloud.net'
+    )
+    return s3
+
+def s3_read_yaml_text(filename: str):
+    s3 = get_object_storage_session()
+    if not s3:
+        return None
+    key = f"{PREFIX}/{filename}" if PREFIX else filename
+    try:
+        obj = s3.get_object(Bucket=BUCKET_NAME, Key=key)
+        content = obj['Body'].read().decode('utf-8')
+        return content
+    except Exception:
+        return None
+
 AVAILABLE_METRICS = [
     "discounts_sum", "discount_sum_w_nds", "launch_flg", "catalog_main_flg", "catalog_listing_flg",
     "search_main_flg", "search_result_flg", "product_screen_flg", "product_screen_to_cart_flg",
@@ -30,9 +67,19 @@ AGGREGATION_FUNCTIONS = [
 
 # --- Загрузка предустановленных метрик ---
 def load_presets():
+    # Try S3 first
+    s3_text = s3_read_yaml_text(METRICS_PRESETS_FILE)
+    if s3_text:
+        try:
+            data = yaml.safe_load(s3_text) or {}
+            return data.get("metrics_presets", [])
+        except Exception:
+            pass
+
+    # Fallback to local file
     try:
         with open(METRICS_PRESETS_FILE, "r") as f:
-            presets = yaml.safe_load(f)["metrics_presets"]
+            presets = yaml.safe_load(f).get("metrics_presets", [])
     except FileNotFoundError:
         presets = []
     return presets
@@ -232,11 +279,19 @@ for key in ["where_filters", "having_filters", "metrics"]:
 if "editing_experiment" not in st.session_state:
     st.session_state.editing_experiment = None
 
-try:
-    with open(CONFIG_FILE, "r") as f:
-        config_data = yaml.safe_load(f) or {"experiments": []}
-except FileNotFoundError:
-    config_data = {"experiments": []}
+# Load config from S3 first, then fallback to local
+_s3_config_text = s3_read_yaml_text(CONFIG_FILE)
+if _s3_config_text:
+    try:
+        config_data = yaml.safe_load(_s3_config_text) or {"experiments": []}
+    except Exception:
+        config_data = {"experiments": []}
+else:
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            config_data = yaml.safe_load(f) or {"experiments": []}
+    except FileNotFoundError:
+        config_data = {"experiments": []}
 
 existing_names = [exp["experiment_name"] for exp in config_data["experiments"]]
 
