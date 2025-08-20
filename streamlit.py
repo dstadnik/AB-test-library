@@ -21,7 +21,7 @@ AVAILABLE_METRICS = [
 ]
 
 AGGREGATION_FUNCTIONS = [
-    "sum", "avg", "max", "min", "maxIf", "count", "countIf"
+    "sum", "avg", "max", "min", "maxIf", "count", "countIf","sumIf"
 ]
 
 # --- Загрузка предустановленных метрик ---
@@ -88,13 +88,13 @@ def generate_sql_queries_for_metrics(experiment: dict, source_table: str) -> lis
     for m in metrics:
         metric_alias = m["name"]
         metric_type = m["type"]
-        
+
         # Комбинируем глобальные WHERE фильтры с индивидуальными фильтрами метрики
         where_clauses = [
             f"event_date BETWEEN '{start_date}' AND '{end_date}'",
             f"(has(ab, '{control_group}') OR has(ab, '{test_group}'))"
         ]
-        
+
         # Добавляем глобальные WHERE фильтры
         for f in global_where_filters:
             value_type = f.get("value_type", "строка")
@@ -104,7 +104,7 @@ def generate_sql_queries_for_metrics(experiment: dict, source_table: str) -> lis
             else:
                 formatted_value = format_sql_value(f['value'], value_type)
                 where_clauses.append(f"{f['field']} {f['operator']} {formatted_value}")
-        
+
         # Добавляем индивидуальные WHERE фильтры метрики
         metric_where_filters = m.get("where_filters", [])
         for f in metric_where_filters:
@@ -117,7 +117,7 @@ def generate_sql_queries_for_metrics(experiment: dict, source_table: str) -> lis
                 where_clauses.append(f"{f['field']} {f['operator']} {formatted_value}")
 
         group_by = "magnit_id, group_label"
-        
+
         base_fields = [
             f"'{experiment['experiment_name']}' AS exp_name",
             "magnit_id",
@@ -197,7 +197,7 @@ exp_name = st.text_input("Название эксперимента", value=sele
 if exp_name in existing_names and selected_exp:
     st.warning("Эксперимент с таким именем уже существует. Будет перезаписан.")
     existing_exp = next(exp for exp in config_data["experiments"] if exp["experiment_name"] == exp_name)
-    
+
     control_id = st.text_input("Control group ID", value=existing_exp.get("control_group_id", ""))
     test_id = st.text_input("Test group ID", value=existing_exp.get("test_group_id", ""))
     start = st.date_input("Дата начала", value=date.fromisoformat(existing_exp.get("start_date", date.today().isoformat())))
@@ -235,7 +235,7 @@ with col3:
 agg_condition = ""
 agg_then = ""
 
-if agg in ["maxIf", "countIf"]:
+if 'if' in agg.lower():
     agg_condition = st.text_input("Условие (например: catalog_main_flg > 0)", key="agg_if_condition")
     agg_then = st.text_input("Значение если условие выполнено (например: 1)", key="agg_if_then")
 
@@ -281,11 +281,11 @@ if st.session_state.temp_metric_where_filters:
                 st.rerun()
 
 if st.button("➕ Добавить базовую метрику"):
-    expression = f"{agg}({agg_then}, {agg_condition})" if agg in ("maxIf", "countIf") and agg_condition else f"{agg}({metric})"
+    expression = f"{agg}({agg_then}, {agg_condition})" if agg in ("maxIf", "countIf","uniqIf","anyIf") and agg_condition else f"{agg}({metric})"
     label_final = label if label else expression
     new_metric = {
-        "name": label_final, 
-        "type": "basic", 
+        "name": label_final,
+        "type": "basic",
         "expression": expression,
         "where_filters": st.session_state.temp_metric_where_filters.copy()
     }
@@ -296,18 +296,21 @@ if st.button("➕ Добавить базовую метрику"):
         st.rerun()
 
 
+
 st.write("### ➗ Добавить ratio-метрику")
 col1, col2 = st.columns(2)
 with col1:
     num_metric = st.selectbox("Числитель метрика", AVAILABLE_METRICS, key="num_metric")
     num_agg = st.selectbox("Числитель агрегация", AGGREGATION_FUNCTIONS, key="num_agg")
-    num_cond = st.text_input("Числитель условие (если maxIf/countIf)", key="num_cond")
-    num_then = st.text_input("Числитель значение если условие верно", key="num_then")
+    if 'if' in num_agg.lower():
+        num_cond = st.text_input("Условие (например: catalog_main_flg > 0)", key="num_cond")
+        num_then = st.text_input("Числитель значение если условие верно", key="num_then")
 with col2:
     denom_metric = st.selectbox("Знаменатель метрика", AVAILABLE_METRICS, key="denom_metric")
     denom_agg = st.selectbox("Знаменатель агрегация", AGGREGATION_FUNCTIONS, key="denom_agg")
-    denom_cond = st.text_input("Знаменатель условие (если maxIf/countIf)", key="denom_cond")
-    denom_then = st.text_input("Знаменатель значение если условие верно", key="denom_then")
+    if 'if' in num_agg.lower():
+        denom_cond = st.text_input("Знаменатель условие (если maxIf/countIf)", key="denom_cond")
+        denom_then = st.text_input("Знаменатель значение если условие верно", key="denom_then")
 
 ratio_label = st.text_input("Название ratio-метрики", key="ratio_label")
 
@@ -355,9 +358,9 @@ if st.button("➕ Добавить ratio"):
     denom_expr = f"{denom_agg}({denom_then}, {denom_cond})" if denom_agg in ["maxIf", "countIf"] and denom_cond else f"{denom_agg}({denom_metric})"
     label_final = ratio_label if ratio_label else f"{num_expr} / {denom_expr}"
     new_ratio_metric = {
-        "name": label_final, 
-        "type": "ratio", 
-        "numerator": num_expr, 
+        "name": label_final,
+        "type": "ratio",
+        "numerator": num_expr,
         "denominator": denom_expr,
         "where_filters": st.session_state.temp_ratio_where_filters.copy()
     }
@@ -509,12 +512,12 @@ st.write("## 💾 Создание пресета метрики")
 st.write("*Сохрани текущую настроенную метрику как пресет для будущего использования*")
 
 if st.session_state.metrics:
-    preset_metric_idx = st.selectbox("Выбери метрику для сохранения как пресет", 
-                                   range(len(st.session_state.metrics)),
-                                   format_func=lambda x: st.session_state.metrics[x]["name"])
-    
+    preset_metric_idx = st.selectbox("Выбери метрику для сохранения как пресет",
+                                     range(len(st.session_state.metrics)),
+                                     format_func=lambda x: st.session_state.metrics[x]["name"])
+
     preset_name = st.text_input("Название пресета", key="preset_name")
-    
+
     if st.button("💾 Сохранить как пресет"):
         if preset_name:
             selected_metric = st.session_state.metrics[preset_metric_idx].copy()
@@ -525,4 +528,3 @@ if st.session_state.metrics:
             metrics_presets = load_presets()
         else:
             st.error("❌ Укажи название пресета")
-
